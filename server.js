@@ -1,13 +1,12 @@
 const express = require("express");
 const cors = require("cors");
-app.use(cors({ origin: "*" }));
-app.options("*", cors());
-app.use(express.json());
 const multer = require("multer");
 
 const app = express();
-app.use(cors());                // Permite que tu frontend (GitHub Pages) llame a esta API
+app.use(cors({ origin: "https://fabriziomc20.github.io" }));
+app.options("*", cors());        // Permite que tu frontend (GitHub Pages) llame a esta API
 app.use(express.json());        // Para JSON en requests
+    
 
 // Multer para recibir archivos (en memoria, para demo)
 const upload = multer({ limits: { fileSize: 10 * 1024 * 1024 } }); // 10MB por archivo
