@@ -1,5 +1,8 @@
 const express = require("express");
 const cors = require("cors");
+app.use(cors({ origin: "*" }));
+app.options("*", cors());
+app.use(express.json());
 const multer = require("multer");
 
 const app = express();
