@@ -9,6 +9,27 @@ const streamifier = require("streamifier");
 
 const app = express();
 
+// --- Helpers para códigos automáticos (pegar una sola vez, después de crear `pool`) ---
+function slugify(str){
+  return String(str || "")
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "") // quita tildes
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")   // espacios y símbolos -> guiones
+    .replace(/^-+|-+$/g, "")       // sin guiones al borde
+    .slice(0, 32);                 // limita longitud
+}
+
+async function generateUniqueCode(table, baseCode){
+  let code = baseCode || "ITEM";
+  let n = 1;
+  for(;;){
+    const { rows } = await pool.query(`SELECT 1 FROM ${table} WHERE code=$1 LIMIT 1`, [code]);
+    if (!rows.length) return code;
+    n += 1;
+    code = `${baseCode}-${n}`;
+  }
+}
+
 /* =========================
    CORS (tu frontend)
    ========================= */
@@ -428,11 +449,17 @@ app.get("/api/sites", async (_req, res) => {
 
 app.post("/api/sites", async (req, res) => {
   try {
-    const { code, name } = req.body || {};
-    if (!code || !name) return res.status(400).send("code y name son obligatorios");
+    const { name } = req.body || {};
+    if (!name) return res.status(400).send("name es obligatorio");
+
+    const base = slugify(name);
+    const code = await generateUniqueCode("sites", base || "SITE");
+
     const r = await pool.query(
-      `INSERT INTO sites (code, name) VALUES ($1,$2) RETURNING id, code, name`,
-      [String(code).trim(), String(name).trim()]
+      `INSERT INTO sites (code, name)
+       VALUES ($1,$2)
+       RETURNING id, code, name`,
+      [code, String(name).trim()]
     );
     res.json(r.rows[0]);
   } catch (e) {
@@ -444,10 +471,12 @@ app.post("/api/sites", async (req, res) => {
 app.put("/api/sites/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { code=null, name=null } = req.body || {};
+    const { name=null } = req.body || {};
     const r = await pool.query(
-      `UPDATE sites SET code = COALESCE($1, code), name = COALESCE($2, name) WHERE id=$3`,
-      [code, name, id]
+      `UPDATE sites
+          SET name = COALESCE($1, name)
+        WHERE id=$2`,
+      [name, id]
     );
     if (r.rowCount === 0) return res.status(404).send("no encontrado");
     res.json({ ok:true });
@@ -469,11 +498,13 @@ app.delete("/api/sites/:id", async (req, res) => {
   }
 });
 
+
 // ===== PROJECTS =====
 app.get("/api/projects", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT p.id, p.code, p.name, p.site_id, s.code AS site_code, s.name AS site_name
+      `SELECT p.id, p.code, p.name, p.site_id,
+              s.code AS site_code, s.name AS site_name
          FROM projects p
          LEFT JOIN sites s ON s.id = p.site_id
         ORDER BY p.id ASC`
@@ -487,12 +518,17 @@ app.get("/api/projects", async (_req, res) => {
 
 app.post("/api/projects", async (req, res) => {
   try {
-    const { code, name, site_id } = req.body || {};
-    if (!code || !name || !site_id) return res.status(400).send("code, name y site_id son obligatorios");
+    const { name, site_id } = req.body || {};
+    if (!name || !site_id) return res.status(400).send("name y site_id son obligatorios");
+
+    const base = slugify(name);
+    const code = await generateUniqueCode("projects", base || "PROJ");
+
     const r = await pool.query(
-      `INSERT INTO projects (code, name, site_id) VALUES ($1,$2,$3)
+      `INSERT INTO projects (code, name, site_id)
+       VALUES ($1,$2,$3)
        RETURNING id, code, name, site_id`,
-      [String(code).trim(), String(name).trim(), Number(site_id)]
+      [code, String(name).trim(), Number(site_id)]
     );
     res.json(r.rows[0]);
   } catch (e) {
@@ -504,14 +540,13 @@ app.post("/api/projects", async (req, res) => {
 app.put("/api/projects/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { code=null, name=null, site_id=null } = req.body || {};
+    const { name=null, site_id=null } = req.body || {};
     const r = await pool.query(
       `UPDATE projects
-          SET code = COALESCE($1, code),
-              name = COALESCE($2, name),
-              site_id = COALESCE($3, site_id)
-        WHERE id=$4`,
-      [code, name, site_id, id]
+          SET name   = COALESCE($1, name),
+              site_id= COALESCE($2, site_id)
+        WHERE id=$3`,
+      [name, site_id, id]
     );
     if (r.rowCount === 0) return res.status(404).send("no encontrado");
     res.json({ ok:true });
@@ -532,6 +567,7 @@ app.delete("/api/projects/:id", async (req, res) => {
     res.status(500).send("error");
   }
 });
+
 
 // ===== SHIFTS (Turnos) =====
 app.get("/api/shifts", async (_req, res) => {
