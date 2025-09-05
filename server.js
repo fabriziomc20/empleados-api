@@ -39,6 +39,49 @@ app.use(cors({
 app.options("*", cors());
 app.use(express.json());
 
+// ===== Normalización de entrada =====
+
+// 1) Helpers
+function stripDiacritics(s = "") {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+function toTitleCase(s = "") {
+  return s
+    .toLowerCase()
+    .replace(/\b[\p{L}\p{N}]+/gu, w => w.charAt(0).toUpperCase() + w.slice(1));
+}
+function normalizeBodyValue(str) {
+  const t = stripDiacritics(String(str).trim());
+  return toTitleCase(t); // "juan pérez" -> "Juan Perez"
+}
+function normalizeQueryValue(str) {
+  // Para búsquedas: trim + sin tildes + en minúsculas
+  return stripDiacritics(String(str).trim()).toLowerCase();
+}
+
+// 2) Middleware
+app.use((req, _res, next) => {
+  // BODY -> Title Case
+  if (req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body)) {
+    for (const k of Object.keys(req.body)) {
+      if (typeof req.body[k] === "string") {
+        req.body[k] = normalizeBodyValue(req.body[k]);
+      }
+    }
+  }
+  // QUERY -> búsqueda (lowercase)
+  if (req.query && typeof req.query === "object") {
+    for (const k of Object.keys(req.query)) {
+      if (typeof req.query[k] === "string") {
+        req.query[k] = normalizeQueryValue(req.query[k]);
+      }
+    }
+  }
+  // params NO se tocan
+  next();
+});
+
+
 /* =========================
    Multer en memoria (15MB)
    ========================= */
