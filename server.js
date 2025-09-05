@@ -37,26 +37,20 @@ const campos = upload.fields([
 /* =========================
    Cloudinary (ENV required)
    ========================= */
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key:    process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-  secure: true
-});
+import { v2 as cloudinary } from "cloudinary";
 
-function uploadToCloudinary(fileBuffer, folder, filename) {
-  return new Promise((resolve, reject) => {
-    const up = cloudinary.uploader.upload_stream(
-      {
-        folder,
-        resource_type: "auto",
-        public_id: filename?.replace(/\.[^.]+$/, "")?.slice(0, 120)
-      },
-      (err, result) => err ? reject(err) : resolve(result.secure_url)
-    );
-    streamifier.createReadStream(fileBuffer).pipe(up);
-  });
-}
+// Con CLOUDINARY_URL ya definida, no hace falta config manual
+// cloudinary.config() la detecta automáticamente.
+cloudinary.config();
+
+app.post("/upload", async (req, res) => {
+  try {
+    const result = await cloudinary.uploader.upload("https://picsum.photos/600");
+    res.json({ url: result.secure_url });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 /* =========================
    PostgreSQL
