@@ -268,9 +268,134 @@ app.put("/api/candidatos/:id/estado", async (req, res) => {
     res.status(500).json({ error: "Error cambiando estado" });
   }
 });
+// ====== Helpers ======
+async function getEmployerIdOrNull() {
+  const r = await pool.query(`SELECT id FROM employers ORDER BY id ASC LIMIT 1`);
+  return r.rows[0]?.id || null;
+}
+
+// ====== Régimen Tributario: catálogos ======
+app.get("/api/regimes/tax", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT id, code, name FROM regimes_tax ORDER BY id ASC`);
+    res.json(rows);
+  } catch (e) {
+    console.error("GET /api/regimes/tax", e);
+    res.status(500).send("error");
+  }
+});
+
+// ====== Régimen Tributario por EMPRESA (histórico) ======
+// Actual vigente
+app.get("/api/employer/tax", async (_req, res) => {
+  try {
+    const empId = await getEmployerIdOrNull();
+    if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
+
+    const q = await pool.query(
+      `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
+         FROM employer_tax_history eth
+         JOIN regimes_tax rt ON rt.id = eth.regime_id
+        WHERE eth.employer_id = $1
+        ORDER BY eth.valid_from DESC
+        LIMIT 1`,
+      [empId]
+    );
+    res.json(q.rows[0] || null);
+  } catch (e) {
+    console.error("GET /api/employer/tax", e);
+    res.status(500).send("error");
+  }
+});
+
+// Histórico completo
+app.get("/api/employer/tax/history", async (_req, res) => {
+  try {
+    const empId = await getEmployerIdOrNull();
+    if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
+
+    const { rows } = await pool.query(
+      `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
+         FROM employer_tax_history eth
+         JOIN regimes_tax rt ON rt.id = eth.regime_id
+        WHERE eth.employer_id = $1
+        ORDER BY eth.valid_from DESC`,
+      [empId]
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error("GET /api/employer/tax/history", e);
+    res.status(500).send("error");
+  }
+});
+
+// Establecer nuevo régimen (versionado)
+// body: { regime_code: 'MICRO'|'ESPECIAL'|'PEQUENA'|'GENERAL', valid_from?: 'YYYY-MM-DD' }
+app.post("/api/employer/tax", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const empId = await getEmployerIdOrNull();
+    if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
+
+    const { regime_code, valid_from } = req.body || {};
+    if (!regime_code) return res.status(400).json({ error: "regime_code es obligatorio" });
+
+    const r = await client.query(`SELECT id FROM regimes_tax WHERE code = $1`, [regime_code]);
+    if (r.rowCount === 0) return res.status(400).json({ error: "regime_code inválido" });
+    const regimeId = r.rows[0].id;
+
+    const vf = valid_from || new Date().toISOString().slice(0,10); // hoy por defecto
+
+    await client.query("BEGIN");
+
+    // Cerrar el anterior (si existe)
+    const prev = await client.query(
+      `SELECT id, valid_from FROM employer_tax_history
+        WHERE employer_id = $1 AND valid_to IS NULL
+        ORDER BY valid_from DESC LIMIT 1`,
+      [empId]
+    );
+    if (prev.rowCount) {
+      await client.query(
+        `UPDATE employer_tax_history
+            SET valid_to = (DATE $2 - INTERVAL '1 day')::date
+          WHERE id = $1 AND valid_to IS NULL`,
+        [prev.rows[0].id, vf]
+      );
+    }
+
+    // Insertar el nuevo vigente
+    const ins = await client.query(
+      `INSERT INTO employer_tax_history (employer_id, regime_id, valid_from, valid_to)
+       VALUES ($1,$2,$3,NULL)
+       RETURNING id`,
+      [empId, regimeId, vf]
+    );
+
+    await client.query("COMMIT");
+
+    // responder estado actual
+    const cur = await pool.query(
+      `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
+         FROM employer_tax_history eth
+         JOIN regimes_tax rt ON rt.id = eth.regime_id
+        WHERE eth.id = $1`,
+      [ins.rows[0].id]
+    );
+    res.json(cur.rows[0]);
+  } catch (e) {
+    await client.query("ROLLBACK");
+    console.error("POST /api/employer/tax", e);
+    res.status(500).json({ error: "Error estableciendo régimen tributario" });
+  } finally {
+    client.release();
+  }
+});
+
 
 /* =========================
    Start
    ========================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
+
