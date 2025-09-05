@@ -392,6 +392,224 @@ app.post("/api/employer/tax", async (req, res) => {
   }
 });
 
+// ===== EMPRESA =====
+app.get("/api/employer", async (_req, res) => {
+  try {
+    const q = await pool.query(`SELECT id, ruc, name, logo_url FROM employers ORDER BY id ASC LIMIT 1`);
+    res.json(q.rows[0] || null);
+  } catch (e) {
+    console.error("GET /api/employer", e);
+    res.status(500).send("error");
+  }
+});
+
+app.post("/api/employer", async (req, res) => {
+  try {
+    const { ruc, name, logo_url } = req.body || {};
+    if (!ruc || !name) return res.status(400).send("RUC y nombre son obligatorios");
+    const up = await pool.query(
+      `INSERT INTO employers (ruc, name, logo_url)
+       VALUES ($1,$2,$3)
+       ON CONFLICT (ruc) DO UPDATE SET name=EXCLUDED.name, logo_url=EXCLUDED.logo_url
+       RETURNING id, ruc, name, logo_url`,
+      [String(ruc).trim(), String(name).trim(), logo_url || null]
+    );
+    res.json(up.rows[0]);
+  } catch (e) {
+    console.error("POST /api/employer", e);
+    res.status(500).send("error");
+  }
+});
+
+// ===== SITES (Sedes) =====
+app.get("/api/sites", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT id, code, name FROM sites ORDER BY id ASC`);
+    res.json(rows);
+  } catch (e) {
+    console.error("GET /api/sites", e);
+    res.status(500).send("error");
+  }
+});
+
+app.post("/api/sites", async (req, res) => {
+  try {
+    const { code, name } = req.body || {};
+    if (!code || !name) return res.status(400).send("code y name son obligatorios");
+    const r = await pool.query(
+      `INSERT INTO sites (code, name) VALUES ($1,$2) RETURNING id, code, name`,
+      [String(code).trim(), String(name).trim()]
+    );
+    res.json(r.rows[0]);
+  } catch (e) {
+    console.error("POST /api/sites", e);
+    res.status(500).send("error");
+  }
+});
+
+app.put("/api/sites/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { code=null, name=null } = req.body || {};
+    const r = await pool.query(
+      `UPDATE sites SET code = COALESCE($1, code), name = COALESCE($2, name) WHERE id=$3`,
+      [code, name, id]
+    );
+    if (r.rowCount === 0) return res.status(404).send("no encontrado");
+    res.json({ ok:true });
+  } catch (e) {
+    console.error("PUT /api/sites/:id", e);
+    res.status(500).send("error");
+  }
+});
+
+app.delete("/api/sites/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await pool.query(`DELETE FROM sites WHERE id=$1`, [id]);
+    res.json({ ok:true });
+  } catch (e) {
+    if (e.code === "23503") return res.status(409).send("No se puede eliminar: tiene proyectos asociados");
+    console.error("DELETE /api/sites/:id", e);
+    res.status(500).send("error");
+  }
+});
+
+// ===== PROJECTS =====
+app.get("/api/projects", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT p.id, p.code, p.name, p.site_id, s.code AS site_code, s.name AS site_name
+         FROM projects p
+         LEFT JOIN sites s ON s.id = p.site_id
+        ORDER BY p.id ASC`
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error("GET /api/projects", e);
+    res.status(500).send("error");
+  }
+});
+
+app.post("/api/projects", async (req, res) => {
+  try {
+    const { code, name, site_id } = req.body || {};
+    if (!code || !name || !site_id) return res.status(400).send("code, name y site_id son obligatorios");
+    const r = await pool.query(
+      `INSERT INTO projects (code, name, site_id) VALUES ($1,$2,$3)
+       RETURNING id, code, name, site_id`,
+      [String(code).trim(), String(name).trim(), Number(site_id)]
+    );
+    res.json(r.rows[0]);
+  } catch (e) {
+    console.error("POST /api/projects", e);
+    res.status(500).send("error");
+  }
+});
+
+app.put("/api/projects/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { code=null, name=null, site_id=null } = req.body || {};
+    const r = await pool.query(
+      `UPDATE projects
+          SET code = COALESCE($1, code),
+              name = COALESCE($2, name),
+              site_id = COALESCE($3, site_id)
+        WHERE id=$4`,
+      [code, name, site_id, id]
+    );
+    if (r.rowCount === 0) return res.status(404).send("no encontrado");
+    res.json({ ok:true });
+  } catch (e) {
+    console.error("PUT /api/projects/:id", e);
+    res.status(500).send("error");
+  }
+});
+
+app.delete("/api/projects/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await pool.query(`DELETE FROM projects WHERE id=$1`, [id]);
+    res.json({ ok:true });
+  } catch (e) {
+    if (e.code === "23503") return res.status(409).send("No se puede eliminar: tiene asignaciones o dependencias");
+    console.error("DELETE /api/projects/:id", e);
+    res.status(500).send("error");
+  }
+});
+
+// ===== SHIFTS (Turnos) =====
+app.get("/api/shifts", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, name,
+              to_char(start_time,'HH24:MI') AS start_time,
+              to_char(end_time,  'HH24:MI') AS end_time
+         FROM shifts
+        ORDER BY id ASC`
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error("GET /api/shifts", e);
+    res.status(500).send("error");
+  }
+});
+
+app.post("/api/shifts", async (req, res) => {
+  try {
+    const { name, start_time, end_time } = req.body || {};
+    if (!name || !start_time || !end_time)
+      return res.status(400).send("name, start_time y end_time son obligatorios");
+    const r = await pool.query(
+      `INSERT INTO shifts (name, start_time, end_time)
+       VALUES ($1,$2,$3)
+       RETURNING id, name,
+                 to_char(start_time,'HH24:MI') AS start_time,
+                 to_char(end_time,  'HH24:MI') AS end_time`,
+      [String(name).trim(), start_time, end_time]
+    );
+    res.json(r.rows[0]);
+  } catch (e) {
+    console.error("POST /api/shifts", e);
+    res.status(500).send("error");
+  }
+});
+
+app.put("/api/shifts/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { name=null, start_time=null, end_time=null } = req.body || {};
+    const r = await pool.query(
+      `UPDATE shifts
+          SET name = COALESCE($1, name),
+              start_time = COALESCE($2, start_time),
+              end_time   = COALESCE($3, end_time)
+        WHERE id=$4`,
+      [name, start_time, end_time, id]
+    );
+    if (r.rowCount === 0) return res.status(404).send("no encontrado");
+    res.json({ ok:true });
+  } catch (e) {
+    console.error("PUT /api/shifts/:id", e);
+    res.status(500).send("error");
+  }
+});
+
+app.delete("/api/shifts/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await pool.query(`DELETE FROM shifts WHERE id=$1`, [id]);
+    res.json({ ok:true });
+  } catch (e) {
+    if (e.code === "23503") return res.status(409).send("No se puede eliminar: está referenciado");
+    console.error("DELETE /api/shifts/:id", e);
+    res.status(500).send("error");
+  }
+});
+
+
+
 
 /* =========================
    Start
