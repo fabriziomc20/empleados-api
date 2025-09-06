@@ -19,12 +19,6 @@ app.use((req, res, next) => {
   next();
 });
 
-/* =========================
-   CORS (tu frontend)
-   ========================= */
-app.use(cors({ origin: ["https://fabriziomc20.github.io"] }));
-app.options("*", cors());
-app.use(express.json());
 
 /* =========================
    Normalización de entrada
