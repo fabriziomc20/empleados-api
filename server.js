@@ -520,16 +520,14 @@ app.delete("/api/sites/:id", async (req, res) => {
 });
 
 /* =========================
-   PROYECTOS
+   PROYECTOS (sin sede)
    ========================= */
 app.get("/api/projects", async (_req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT p.id, p.code, p.name, p.site_id,
-              s.code AS site_code, s.name AS site_name
-         FROM projects p
-         LEFT JOIN sites s ON s.id = p.site_id
-        ORDER BY p.id ASC`
+      `SELECT id, code, name
+         FROM projects
+        ORDER BY id ASC`
     );
     res.json(rows);
   } catch (e) {
@@ -540,17 +538,17 @@ app.get("/api/projects", async (_req, res) => {
 
 app.post("/api/projects", async (req, res) => {
   try {
-    const { name, site_id } = req.body || {};
-    if (!name || !site_id) return res.status(400).send("name y site_id son obligatorios");
+    const { name } = req.body || {};
+    if (!name) return res.status(400).send("name es obligatorio");
 
     const base = slugify(name);
     const code = await generateUniqueCode("projects", base || "PROJ");
 
     const r = await pool.query(
-      `INSERT INTO projects (code, name, site_id)
-       VALUES ($1,$2,$3)
-       RETURNING id, code, name, site_id`,
-      [code, String(name).trim(), Number(site_id)]
+      `INSERT INTO projects (code, name)
+       VALUES ($1,$2)
+       RETURNING id, code, name`,
+      [code, String(name).trim()]
     );
     res.json(r.rows[0]);
   } catch (e) {
@@ -562,13 +560,13 @@ app.post("/api/projects", async (req, res) => {
 app.put("/api/projects/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { name = null, site_id = null } = req.body || {};
+    const { name = null } = req.body || {};
+
     const r = await pool.query(
       `UPDATE projects
-          SET name   = COALESCE($1, name),
-              site_id= COALESCE($2, site_id)
-        WHERE id=$3`,
-      [name, site_id, id]
+          SET name = COALESCE($1, name)
+        WHERE id = $2`,
+      [name, id]
     );
     if (r.rowCount === 0) return res.status(404).send("no encontrado");
     res.json({ ok: true });
@@ -584,7 +582,8 @@ app.delete("/api/projects/:id", async (req, res) => {
     await pool.query(`DELETE FROM projects WHERE id=$1`, [id]);
     res.json({ ok: true });
   } catch (e) {
-    if (e.code === "23503") return res.status(409).send("No se puede eliminar: tiene asignaciones o dependencias");
+    if (e.code === "23503")
+      return res.status(409).send("No se puede eliminar: tiene asignaciones o dependencias");
     console.error("DELETE /api/projects/:id", e);
     res.status(500).send("error");
   }
