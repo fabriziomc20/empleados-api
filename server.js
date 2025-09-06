@@ -9,39 +9,16 @@ const streamifier = require("streamifier");
 
 const app = express();
 
-// --- Helpers para códigos automáticos (pegar una sola vez, después de crear `pool`) ---
-function slugify(str){
-  return String(str || "")
-    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "") // quita tildes
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, "-")   // espacios y símbolos -> guiones
-    .replace(/^-+|-+$/g, "")       // sin guiones al borde
-    .slice(0, 32);                 // limita longitud
-}
-
-async function generateUniqueCode(table, baseCode){
-  let code = baseCode || "ITEM";
-  let n = 1;
-  for(;;){
-    const { rows } = await pool.query(`SELECT 1 FROM ${table} WHERE code=$1 LIMIT 1`, [code]);
-    if (!rows.length) return code;
-    n += 1;
-    code = `${baseCode}-${n}`;
-  }
-}
-
 /* =========================
    CORS (tu frontend)
    ========================= */
-app.use(cors({
-  origin: ["https://fabriziomc20.github.io"],
-}));
+app.use(cors({ origin: ["https://fabriziomc20.github.io"] }));
 app.options("*", cors());
 app.use(express.json());
 
-// ===== Normalización de entrada =====
-
-// 1) Helpers
+/* =========================
+   Normalización de entrada
+   ========================= */
 function stripDiacritics(s = "") {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
@@ -52,16 +29,12 @@ function toTitleCase(s = "") {
 }
 function normalizeBodyValue(str) {
   const t = stripDiacritics(String(str).trim());
-  return toTitleCase(t); // "juan pérez" -> "Juan Perez"
+  return toTitleCase(t);
 }
 function normalizeQueryValue(str) {
-  // Para búsquedas: trim + sin tildes + en minúsculas
   return stripDiacritics(String(str).trim()).toLowerCase();
 }
-
-// 2) Middleware
 app.use((req, _res, next) => {
-  // BODY -> Title Case
   if (req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body)) {
     for (const k of Object.keys(req.body)) {
       if (typeof req.body[k] === "string") {
@@ -69,7 +42,6 @@ app.use((req, _res, next) => {
       }
     }
   }
-  // QUERY -> búsqueda (lowercase)
   if (req.query && typeof req.query === "object") {
     for (const k of Object.keys(req.query)) {
       if (typeof req.query[k] === "string") {
@@ -77,17 +49,15 @@ app.use((req, _res, next) => {
       }
     }
   }
-  // params NO se tocan
   next();
 });
-
 
 /* =========================
    Multer en memoria (15MB)
    ========================= */
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 }
+  limits: { fileSize: 15 * 1024 * 1024 },
 });
 const campos = upload.fields([
   { name: "dni",           maxCount: 2  },
@@ -99,39 +69,73 @@ const campos = upload.fields([
 ]);
 
 /* =========================
-   Cloudinary (ENV required)
+   Cloudinary
    ========================= */
-import { v2 as cloudinary } from "cloudinary";
+// Usa CLOUDINARY_URL o variables separadas
+cloudinary.config(process.env.CLOUDINARY_URL);
 
-// Con CLOUDINARY_URL ya definida, no hace falta config manual
-// cloudinary.config() la detecta automáticamente.
-cloudinary.config();
-
-app.post("/upload", async (req, res) => {
-  try {
-    const result = await cloudinary.uploader.upload("https://picsum.photos/600");
-    res.json({ url: result.secure_url });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+function uploadToCloudinary(fileBuffer, folder, filename) {
+  return new Promise((resolve, reject) => {
+    const up = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        resource_type: "auto",
+        public_id: filename?.replace(/\.[^.]+$/, "")?.slice(0, 120),
+      },
+      (err, result) => (err ? reject(err) : resolve(result.secure_url))
+    );
+    streamifier.createReadStream(fileBuffer).pipe(up);
+  });
+}
 
 /* =========================
    PostgreSQL
    ========================= */
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: { rejectUnauthorized: false },
 });
 
 /* =========================
-   Health-check
+   Helpers varios
+   ========================= */
+function slugify(str) {
+  return String(str || "")
+    .normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+}
+async function generateUniqueCode(table, baseCode) {
+  let code = baseCode || "ITEM";
+  let n = 1;
+  for (;;) {
+    const { rows } = await pool.query(
+      `SELECT 1 FROM ${table} WHERE code = $1 LIMIT 1`,
+      [code]
+    );
+    if (!rows.length) return code;
+    n += 1;
+    code = `${baseCode}-${n}`;
+  }
+}
+async function getEmployerIdOrNull() {
+  const r = await pool.query(`SELECT id FROM employers ORDER BY id ASC LIMIT 1`);
+  return r.rows[0]?.id || null;
+}
+
+/* =========================
+   Health & Version
    ========================= */
 app.get("/", (_req, res) => res.status(200).send("API Funcionando 🚀"));
+app.get("/version", (_req, res) => {
+  res.json({ ok: true, version: "build-" + new Date().toISOString() });
+});
 
-/* ============================================================
-   GET /api/candidatos  (filtros: ano/mes/estado, rango grupos)
-   ============================================================ */
+/* =========================
+   CANDIDATOS
+   ========================= */
 app.get("/api/candidatos", async (req, res) => {
   try {
     const {
@@ -139,7 +143,7 @@ app.get("/api/candidatos", async (req, res) => {
       mes = "TODOS",
       estado = null,
       grupoInicio = null,
-      grupoFin = null
+      grupoFin = null,
     } = req.query;
 
     const where = [];
@@ -177,9 +181,6 @@ app.get("/api/candidatos", async (req, res) => {
   }
 });
 
-/* =================================
-   GET /api/candidatos/:id (detalle)
-   ================================= */
 app.get("/api/candidatos/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -211,9 +212,6 @@ app.get("/api/candidatos/:id", async (req, res) => {
   }
 });
 
-/* ============================================
-   POST /api/candidatos  (crea + sube documentos)
-   ============================================ */
 app.post("/api/candidatos", campos, async (req, res) => {
   const client = await pool.connect();
   try {
@@ -224,7 +222,7 @@ app.post("/api/candidatos", campos, async (req, res) => {
       nombres,
       sede = null,
       turno_horario = null,
-      grupo = null
+      grupo = null,
     } = req.body;
 
     if (!dni || !apellido_paterno || !apellido_materno || !nombres) {
@@ -241,8 +239,7 @@ app.post("/api/candidatos", campos, async (req, res) => {
     );
     const { id: candidatoId, dni: candDni } = ins.rows[0];
 
-    // Subir archivos si llegaron
-    const tipos = ["dni","certificados","antecedentes","medicos","capacitacion","cv"];
+    const tipos = ["dni", "certificados", "antecedentes", "medicos", "capacitacion", "cv"];
     const inserts = [];
 
     for (const tipo of tipos) {
@@ -255,7 +252,7 @@ app.post("/api/candidatos", campos, async (req, res) => {
     }
 
     if (inserts.length) {
-      const values = inserts.map((_, i) => `($1, $${i*2+2}, $${i*2+3})`).join(", ");
+      const values = inserts.map((_, i) => `($1, $${i * 2 + 2}, $${i * 2 + 3})`).join(", ");
       const params = [candidatoId, ...inserts.flatMap(x => [x.tipo, x.url])];
       await client.query(
         `INSERT INTO candidato_documentos (candidato_id, tipo, url) VALUES ${values}`,
@@ -275,9 +272,6 @@ app.post("/api/candidatos", campos, async (req, res) => {
   }
 });
 
-/* ============================================
-   PUT /api/candidatos/:id  (actualiza básicos)
-   ============================================ */
 app.put("/api/candidatos/:id", campos, async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -298,9 +292,6 @@ app.put("/api/candidatos/:id", campos, async (req, res) => {
     );
     if (r.rowCount === 0) return res.status(404).json({ error: "No encontrado" });
 
-    // (Opcional) Si envías archivos en edición, puedes subirlos igual que en POST y guardarlos:
-    // ... similar a inserts en POST, apuntando a candidato_documentos
-
     res.json({ ok: true });
   } catch (e) {
     console.error("PUT /api/candidatos/:id", e);
@@ -308,14 +299,11 @@ app.put("/api/candidatos/:id", campos, async (req, res) => {
   }
 });
 
-/* ============================================
-   PUT /api/candidatos/:id/estado  (cambiar estado)
-   ============================================ */
 app.put("/api/candidatos/:id/estado", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { estado } = req.body; // EN_REVISION | CANCELADO | APROBADO
-    if (!["EN_REVISION","CANCELADO","APROBADO"].includes(estado)) {
+    const { estado } = req.body;
+    if (!["En Revision", "Cancelado", "Aprobado"].includes(estado)) {
       return res.status(400).json({ error: "Estado inválido" });
     }
     const r = await pool.query(`UPDATE candidatos SET estado=$1 WHERE id=$2`, [estado, id]);
@@ -326,131 +314,10 @@ app.put("/api/candidatos/:id/estado", async (req, res) => {
     res.status(500).json({ error: "Error cambiando estado" });
   }
 });
-// ====== Helpers ======
-async function getEmployerIdOrNull() {
-  const r = await pool.query(`SELECT id FROM employers ORDER BY id ASC LIMIT 1`);
-  return r.rows[0]?.id || null;
-}
 
-// ====== Régimen Tributario: catálogos ======
-app.get("/api/regimes/tax", async (_req, res) => {
-  try {
-    const { rows } = await pool.query(`SELECT id, code, name FROM regimes_tax ORDER BY id ASC`);
-    res.json(rows);
-  } catch (e) {
-    console.error("GET /api/regimes/tax", e);
-    res.status(500).send("error");
-  }
-});
-
-// ====== Régimen Tributario por EMPRESA (histórico) ======
-// Actual vigente
-app.get("/api/employer/tax", async (_req, res) => {
-  try {
-    const empId = await getEmployerIdOrNull();
-    if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
-
-    const q = await pool.query(
-      `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
-         FROM employer_tax_history eth
-         JOIN regimes_tax rt ON rt.id = eth.regime_id
-        WHERE eth.employer_id = $1
-        ORDER BY eth.valid_from DESC
-        LIMIT 1`,
-      [empId]
-    );
-    res.json(q.rows[0] || null);
-  } catch (e) {
-    console.error("GET /api/employer/tax", e);
-    res.status(500).send("error");
-  }
-});
-
-// Histórico completo
-app.get("/api/employer/tax/history", async (_req, res) => {
-  try {
-    const empId = await getEmployerIdOrNull();
-    if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
-
-    const { rows } = await pool.query(
-      `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
-         FROM employer_tax_history eth
-         JOIN regimes_tax rt ON rt.id = eth.regime_id
-        WHERE eth.employer_id = $1
-        ORDER BY eth.valid_from DESC`,
-      [empId]
-    );
-    res.json(rows);
-  } catch (e) {
-    console.error("GET /api/employer/tax/history", e);
-    res.status(500).send("error");
-  }
-});
-
-// Establecer nuevo régimen (versionado)
-// body: { regime_code: 'MICRO'|'ESPECIAL'|'PEQUENA'|'GENERAL', valid_from?: 'YYYY-MM-DD' }
-app.post("/api/employer/tax", async (req, res) => {
-  const client = await pool.connect();
-  try {
-    const empId = await getEmployerIdOrNull();
-    if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
-
-    const { regime_code, valid_from } = req.body || {};
-    if (!regime_code) return res.status(400).json({ error: "regime_code es obligatorio" });
-
-    const r = await client.query(`SELECT id FROM regimes_tax WHERE code = $1`, [regime_code]);
-    if (r.rowCount === 0) return res.status(400).json({ error: "regime_code inválido" });
-    const regimeId = r.rows[0].id;
-
-    const vf = valid_from || new Date().toISOString().slice(0,10); // hoy por defecto
-
-    await client.query("BEGIN");
-
-    // Cerrar el anterior (si existe)
-    const prev = await client.query(
-      `SELECT id, valid_from FROM employer_tax_history
-        WHERE employer_id = $1 AND valid_to IS NULL
-        ORDER BY valid_from DESC LIMIT 1`,
-      [empId]
-    );
-    if (prev.rowCount) {
-      await client.query(
-        `UPDATE employer_tax_history
-            SET valid_to = (DATE $2 - INTERVAL '1 day')::date
-          WHERE id = $1 AND valid_to IS NULL`,
-        [prev.rows[0].id, vf]
-      );
-    }
-
-    // Insertar el nuevo vigente
-    const ins = await client.query(
-      `INSERT INTO employer_tax_history (employer_id, regime_id, valid_from, valid_to)
-       VALUES ($1,$2,$3,NULL)
-       RETURNING id`,
-      [empId, regimeId, vf]
-    );
-
-    await client.query("COMMIT");
-
-    // responder estado actual
-    const cur = await pool.query(
-      `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
-         FROM employer_tax_history eth
-         JOIN regimes_tax rt ON rt.id = eth.regime_id
-        WHERE eth.id = $1`,
-      [ins.rows[0].id]
-    );
-    res.json(cur.rows[0]);
-  } catch (e) {
-    await client.query("ROLLBACK");
-    console.error("POST /api/employer/tax", e);
-    res.status(500).json({ error: "Error estableciendo régimen tributario" });
-  } finally {
-    client.release();
-  }
-});
-
-// ===== EMPRESA =====
+/* =========================
+   EMPRESA / RÉGIMEN
+   ========================= */
 app.get("/api/employer", async (_req, res) => {
   try {
     const q = await pool.query(`SELECT id, ruc, name, logo_url FROM employers ORDER BY id ASC LIMIT 1`);
@@ -479,7 +346,118 @@ app.post("/api/employer", async (req, res) => {
   }
 });
 
-// ===== SITES (Sedes) =====
+app.get("/api/regimes/tax", async (_req, res) => {
+  try {
+    const { rows } = await pool.query(`SELECT id, code, name FROM regimes_tax ORDER BY id ASC`);
+    res.json(rows);
+  } catch (e) {
+    console.error("GET /api/regimes/tax", e);
+    res.status(500).send("error");
+  }
+});
+
+app.get("/api/employer/tax", async (_req, res) => {
+  try {
+    const empId = await getEmployerIdOrNull();
+    if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
+
+    const q = await pool.query(
+      `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
+         FROM employer_tax_history eth
+         JOIN regimes_tax rt ON rt.id = eth.regime_id
+        WHERE eth.employer_id = $1
+        ORDER BY eth.valid_from DESC
+        LIMIT 1`,
+      [empId]
+    );
+    res.json(q.rows[0] || null);
+  } catch (e) {
+    console.error("GET /api/employer/tax", e);
+    res.status(500).send("error");
+  }
+});
+
+app.get("/api/employer/tax/history", async (_req, res) => {
+  try {
+    const empId = await getEmployerIdOrNull();
+    if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
+
+    const { rows } = await pool.query(
+      `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
+         FROM employer_tax_history eth
+         JOIN regimes_tax rt ON rt.id = eth.regime_id
+        WHERE eth.employer_id = $1
+        ORDER BY eth.valid_from DESC`,
+      [empId]
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error("GET /api/employer/tax/history", e);
+    res.status(500).send("error");
+  }
+});
+
+app.post("/api/employer/tax", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const empId = await getEmployerIdOrNull();
+    if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
+
+    const { regime_code, valid_from } = req.body || {};
+    if (!regime_code) return res.status(400).json({ error: "regime_code es obligatorio" });
+
+    const r = await client.query(`SELECT id FROM regimes_tax WHERE code = $1`, [regime_code]);
+    if (r.rowCount === 0) return res.status(400).json({ error: "regime_code inválido" });
+    const regimeId = r.rows[0].id;
+
+    const vf = valid_from || new Date().toISOString().slice(0, 10);
+
+    await client.query("BEGIN");
+
+    const prev = await client.query(
+      `SELECT id, valid_from FROM employer_tax_history
+        WHERE employer_id = $1 AND valid_to IS NULL
+        ORDER BY valid_from DESC LIMIT 1`,
+      [empId]
+    );
+    if (prev.rowCount) {
+      await client.query(
+        `UPDATE employer_tax_history
+            SET valid_to = (DATE $2 - INTERVAL '1 day')::date
+          WHERE id = $1 AND valid_to IS NULL`,
+        [prev.rows[0].id, vf]
+      );
+    }
+
+    const ins = await client.query(
+      `INSERT INTO employer_tax_history (employer_id, regime_id, valid_from, valid_to)
+       VALUES ($1,$2,$3,NULL)
+       RETURNING id`,
+      [empId, regimeId, vf]
+    );
+
+    await client.query("COMMIT");
+
+    const cur = await pool.query(
+      `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
+         FROM employer_tax_history eth
+         JOIN regimes_tax rt ON rt.id = eth.regime_id
+        WHERE eth.id = $1`,
+      [ins.rows[0].id]
+    );
+    res.json(cur.rows[0]);
+  } catch (e) {
+    await client.query("ROLLBACK");
+    console.error("POST /api/employer/tax", e);
+    res.status(500).json({ error: "Error estableciendo régimen tributario" });
+  } finally {
+    client.release();
+  }
+});
+
+/* =========================
+   SEDES
+   ========================= */
 app.get("/api/sites", async (_req, res) => {
   try {
     const { rows } = await pool.query(`SELECT id, code, name FROM sites ORDER BY id ASC`);
@@ -514,7 +492,7 @@ app.post("/api/sites", async (req, res) => {
 app.put("/api/sites/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { name=null } = req.body || {};
+    const { name = null } = req.body || {};
     const r = await pool.query(
       `UPDATE sites
           SET name = COALESCE($1, name)
@@ -522,7 +500,7 @@ app.put("/api/sites/:id", async (req, res) => {
       [name, id]
     );
     if (r.rowCount === 0) return res.status(404).send("no encontrado");
-    res.json({ ok:true });
+    res.json({ ok: true });
   } catch (e) {
     console.error("PUT /api/sites/:id", e);
     res.status(500).send("error");
@@ -533,7 +511,7 @@ app.delete("/api/sites/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
     await pool.query(`DELETE FROM sites WHERE id=$1`, [id]);
-    res.json({ ok:true });
+    res.json({ ok: true });
   } catch (e) {
     if (e.code === "23503") return res.status(409).send("No se puede eliminar: tiene proyectos asociados");
     console.error("DELETE /api/sites/:id", e);
@@ -541,8 +519,9 @@ app.delete("/api/sites/:id", async (req, res) => {
   }
 });
 
-
-// ===== PROJECTS =====
+/* =========================
+   PROYECTOS
+   ========================= */
 app.get("/api/projects", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -583,7 +562,7 @@ app.post("/api/projects", async (req, res) => {
 app.put("/api/projects/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { name=null, site_id=null } = req.body || {};
+    const { name = null, site_id = null } = req.body || {};
     const r = await pool.query(
       `UPDATE projects
           SET name   = COALESCE($1, name),
@@ -592,7 +571,7 @@ app.put("/api/projects/:id", async (req, res) => {
       [name, site_id, id]
     );
     if (r.rowCount === 0) return res.status(404).send("no encontrado");
-    res.json({ ok:true });
+    res.json({ ok: true });
   } catch (e) {
     console.error("PUT /api/projects/:id", e);
     res.status(500).send("error");
@@ -603,7 +582,7 @@ app.delete("/api/projects/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
     await pool.query(`DELETE FROM projects WHERE id=$1`, [id]);
-    res.json({ ok:true });
+    res.json({ ok: true });
   } catch (e) {
     if (e.code === "23503") return res.status(409).send("No se puede eliminar: tiene asignaciones o dependencias");
     console.error("DELETE /api/projects/:id", e);
@@ -611,8 +590,9 @@ app.delete("/api/projects/:id", async (req, res) => {
   }
 });
 
-
-// ===== SHIFTS (Turnos) =====
+/* =========================
+   TURNOS
+   ========================= */
 app.get("/api/shifts", async (_req, res) => {
   try {
     const { rows } = await pool.query(
@@ -652,7 +632,7 @@ app.post("/api/shifts", async (req, res) => {
 app.put("/api/shifts/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const { name=null, start_time=null, end_time=null } = req.body || {};
+    const { name = null, start_time = null, end_time = null } = req.body || {};
     const r = await pool.query(
       `UPDATE shifts
           SET name = COALESCE($1, name),
@@ -662,7 +642,7 @@ app.put("/api/shifts/:id", async (req, res) => {
       [name, start_time, end_time, id]
     );
     if (r.rowCount === 0) return res.status(404).send("no encontrado");
-    res.json({ ok:true });
+    res.json({ ok: true });
   } catch (e) {
     console.error("PUT /api/shifts/:id", e);
     res.status(500).send("error");
@@ -673,7 +653,7 @@ app.delete("/api/shifts/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
     await pool.query(`DELETE FROM shifts WHERE id=$1`, [id]);
-    res.json({ ok:true });
+    res.json({ ok: true });
   } catch (e) {
     if (e.code === "23503") return res.status(409).send("No se puede eliminar: está referenciado");
     console.error("DELETE /api/shifts/:id", e);
@@ -681,12 +661,10 @@ app.delete("/api/shifts/:id", async (req, res) => {
   }
 });
 
-
-
-
 /* =========================
    Start
    ========================= */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
+
 
