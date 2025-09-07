@@ -408,47 +408,49 @@ app.post("/api/employer/tax", async (req, res) => {
     const empId = await getEmployerIdOrNull();
     if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
 
-    const { regime_code, valid_from } = req.body || {};
+    // normaliza regime_code del body (independiente del middleware global)
+    const raw = req.body?.regime_code ?? "";
+    const regime_code = String(raw)
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // sin tildes
+      .toUpperCase().trim();
+
     if (!regime_code) return res.status(400).json({ error: "regime_code es obligatorio" });
 
-    const r = await client.query(`SELECT id FROM regimes_tax WHERE code = $1`, [regime_code]);
+    const r = await client.query(
+      `SELECT id FROM regimes_tax WHERE UPPER(code) = $1`,
+      [regime_code]
+    );
     if (r.rowCount === 0) return res.status(400).json({ error: "regime_code inválido" });
-    const regimeId = r.rows[0].id;
 
-    const vf = valid_from || new Date().toISOString().slice(0, 10);
+    const regimeId = r.rows[0].id;
+    const vf = (req.body?.valid_from || new Date().toISOString().slice(0,10));
 
     await client.query("BEGIN");
-
     const prev = await client.query(
-      `SELECT id, valid_from FROM employer_tax_history
-        WHERE employer_id = $1 AND valid_to IS NULL
-        ORDER BY valid_from DESC LIMIT 1`,
-      [empId]
+      `SELECT id FROM employer_tax_history
+        WHERE employer_id=$1 AND valid_to IS NULL
+        ORDER BY valid_from DESC LIMIT 1`, [empId]
     );
     if (prev.rowCount) {
       await client.query(
         `UPDATE employer_tax_history
-            SET valid_to = (DATE $2 - INTERVAL '1 day')::date
-          WHERE id = $1 AND valid_to IS NULL`,
+           SET valid_to = (DATE $2 - INTERVAL '1 day')::date
+         WHERE id=$1 AND valid_to IS NULL`,
         [prev.rows[0].id, vf]
       );
     }
-
     const ins = await client.query(
       `INSERT INTO employer_tax_history (employer_id, regime_id, valid_from, valid_to)
-       VALUES ($1,$2,$3,NULL)
-       RETURNING id`,
+       VALUES ($1,$2,$3,NULL) RETURNING id`,
       [empId, regimeId, vf]
     );
-
     await client.query("COMMIT");
 
     const cur = await pool.query(
       `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
          FROM employer_tax_history eth
          JOIN regimes_tax rt ON rt.id = eth.regime_id
-        WHERE eth.id = $1`,
-      [ins.rows[0].id]
+        WHERE eth.id = $1`, [ins.rows[0].id]
     );
     res.json(cur.rows[0]);
   } catch (e) {
@@ -459,6 +461,7 @@ app.post("/api/employer/tax", async (req, res) => {
     client.release();
   }
 });
+
 
 /* =========================
    SEDES
