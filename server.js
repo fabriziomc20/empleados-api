@@ -21,32 +21,56 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-/* =========================
-   Normalización de entrada
-   ========================= */
+// ===== Normalización de entrada (más segura) =====
+
+// Helpers
 function stripDiacritics(s = "") {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 function toTitleCase(s = "") {
-  return s
-    .toLowerCase()
-    .replace(/\b[\p{L}\p{N}]+/gu, w => w.charAt(0).toUpperCase() + w.slice(1));
+  return s.toLowerCase().replace(/\b[\p{L}\p{N}]+/gu, w => w.charAt(0).toUpperCase() + w.slice(1));
 }
-function normalizeBodyValue(str) {
+function normalizeNameLike(str) {
   const t = stripDiacritics(String(str).trim());
   return toTitleCase(t);
 }
 function normalizeQueryValue(str) {
+  // Para búsquedas: trim + sin tildes + en minúsculas
   return stripDiacritics(String(str).trim()).toLowerCase();
 }
+
 app.use((req, _res, next) => {
+  // Campos que NO se deben tocar (enums/ids/fechas/horas/urls/códigos)
+  const skipKeys = new Set([
+    'regime_code','start_time','end_time','valid_from',
+    'logo_url','url','ruc','dni','code','site_id','project_id','employer_id',
+    'grupo','estado'
+  ]);
+
+  // Campos de tipo “nombre/título” que sí queremos Title Case sin tildes
+  const nameLikeKeys = new Set([
+    'name','apellido_paterno','apellido_materno','nombres',
+    'sede','turno_horario'
+  ]);
+
+  // BODY: tratar solo strings
   if (req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body)) {
     for (const k of Object.keys(req.body)) {
-      if (typeof req.body[k] === "string") {
-        req.body[k] = normalizeBodyValue(req.body[k]);
+      if (typeof req.body[k] !== "string") continue;
+      const raw = req.body[k];
+      if (skipKeys.has(k)) {
+        // solo trimming suave para estos
+        req.body[k] = String(raw).trim();
+      } else if (nameLikeKeys.has(k)) {
+        req.body[k] = normalizeNameLike(raw);
+      } else {
+        // por defecto solo trim (no title-case para no sorprender)
+        req.body[k] = String(raw).trim();
       }
     }
   }
+
+  // QUERY: normalizar para búsqueda libre
   if (req.query && typeof req.query === "object") {
     for (const k of Object.keys(req.query)) {
       if (typeof req.query[k] === "string") {
@@ -56,6 +80,7 @@ app.use((req, _res, next) => {
   }
   next();
 });
+
 
 /* =========================
    Multer en memoria (15MB)
