@@ -432,101 +432,52 @@ app.get("/api/employer/tax/history", async (_req, res) => {
 app.post("/api/employer/tax", async (req, res) => {
   const client = await pool.connect();
   try {
-    // 1) Empresa obligatoria
     const empId = await getEmployerIdOrNull();
-    if (!empId) {
-      return res.status(400).json({ error: "Primero registra la Empresa" });
-    }
+    if (!empId) return res.status(400).json({ error: "Primero registra la Empresa" });
 
-    // 2) Inputs
     let { regime_code, valid_from } = req.body || {};
-    if (!regime_code) {
-      return res.status(400).json({ error: "regime_code es obligatorio" });
+    if (!regime_code) return res.status(400).json({ error: "regime_code es obligatorio" });
+
+    // normalizar codigo (por si viene en minúsculas)
+    regime_code = String(regime_code).trim().toUpperCase();
+
+    // validar fecha (YYYY-MM-DD). Si no viene, hoy.
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(valid_from || "")) {
+      valid_from = new Date().toISOString().slice(0,10);
     }
 
-    // 3) Normalizar/validar fecha (YYYY-MM-DD)
-    const today = new Date().toISOString().slice(0, 10);
-    const isYMD = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ""));
-    const vf = isYMD(valid_from) ? valid_from : today;
-
-    // 4) Regimen válido
-    const rReg = await client.query(`SELECT id, code, name FROM regimes_tax WHERE code = $1`, [regime_code]);
-    if (rReg.rowCount === 0) {
-      return res.status(400).json({ error: "regime_code inválido" });
-    }
-    const regimeId = rReg.rows[0].id;
+    const r = await client.query(`SELECT id FROM regimes_tax WHERE code = $1`, [regime_code]);
+    if (r.rowCount === 0) return res.status(400).json({ error: "regime_code inválido" });
+    const regimeId = r.rows[0].id;
 
     await client.query("BEGIN");
 
-    // 5) Traer vigente actual (si lo hay)
-    const curQ = await client.query(
-      `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code
-         FROM employer_tax_history eth
-         JOIN regimes_tax rt ON rt.id = eth.regime_id
-        WHERE eth.employer_id = $1 AND eth.valid_to IS NULL
-        ORDER BY eth.valid_from DESC
-        LIMIT 1`,
+    // Cerrar el anterior (si existe) — OJO: usa $2::date
+    const prev = await client.query(
+      `SELECT id FROM employer_tax_history
+        WHERE employer_id = $1 AND valid_to IS NULL
+        ORDER BY valid_from DESC LIMIT 1`,
       [empId]
     );
-
-    // 5.1) Si ya está ese régimen desde la misma fecha, devolver idempotente
-    if (curQ.rowCount) {
-      const cur = curQ.rows[0];
-      if (cur.code === regime_code && String(cur.valid_from) === vf) {
-        await client.query("COMMIT");
-        return res.json({
-          id: cur.id,
-          code: cur.code,
-          valid_from: cur.valid_from,
-          valid_to: cur.valid_to,
-          message: "Sin cambios (régimen idéntico y misma fecha)"
-        });
-      }
-    }
-
-    // 6) Cerrar el anterior si existe
-    if (curQ.rowCount) {
-      const prev = curQ.rows[0];
-      // Si la nueva fecha es posterior al inicio anterior, cerramos el anterior al día previo.
-      // Si es igual o anterior (caso borde), lo cerramos el mismo día para evitar fechas negativas.
-      const closeTo =
-        new Date(vf) > new Date(prev.valid_from)
-          ? `(DATE $2 - INTERVAL '1 day')::date`
-          : `DATE $2`; // lo cerramos el mismo día
-
+    if (prev.rowCount) {
       await client.query(
         `UPDATE employer_tax_history
-            SET valid_to = ${closeTo}
+            SET valid_to = ($2::date - INTERVAL '1 day')::date
           WHERE id = $1 AND valid_to IS NULL`,
-        [prev.id, vf]
+        [prev.rows[0].id, valid_from]
       );
     }
 
-    // 7) Evitar choque de unicidad exacta con mismo (employer_id, valid_from)
-    const clash = await client.query(
-      `SELECT 1
-         FROM employer_tax_history
-        WHERE employer_id = $1 AND valid_from = $2
-        LIMIT 1`,
-      [empId, vf]
-    );
-    if (clash.rowCount) {
-      // ya existe una fila con ese valid_from; en vez de romper, devolvemos un error claro
-      await client.query("ROLLBACK");
-      return res.status(409).json({ error: "Ya existe un registro con esa fecha 'valid_from' para la empresa" });
-    }
-
-    // 8) Insertar nuevo vigente
+    // Insertar el nuevo vigente — OJO: $3::date
     const ins = await client.query(
       `INSERT INTO employer_tax_history (employer_id, regime_id, valid_from, valid_to)
-       VALUES ($1,$2,$3,NULL)
-       RETURNING id, valid_from, valid_to`,
-      [empId, regimeId, vf]
+       VALUES ($1,$2,$3::date,NULL)
+       RETURNING id`,
+      [empId, regimeId, valid_from]
     );
 
     await client.query("COMMIT");
 
-    // 9) Responder estado actual (incluye nombre/código)
     const cur = await pool.query(
       `SELECT eth.id, eth.valid_from, eth.valid_to, rt.code, rt.name
          FROM employer_tax_history eth
@@ -534,17 +485,16 @@ app.post("/api/employer/tax", async (req, res) => {
         WHERE eth.id = $1`,
       [ins.rows[0].id]
     );
-
-    return res.json(cur.rows[0]);
+    res.json(cur.rows[0]);
   } catch (e) {
     await client.query("ROLLBACK");
-    console.error("POST /api/employer/tax ERROR:", e);
-    // Devuelve el mensaje real para depurar más fácil
-    return res.status(500).json({ error: "Error estableciendo régimen tributario", detail: String(e.message || e) });
+    console.error("POST /api/employer/tax", e);
+    res.status(500).json({ error: "Error estableciendo régimen tributario" });
   } finally {
     client.release();
   }
 });
+
 
 
 /* =========================
