@@ -184,7 +184,7 @@ app.get("/api/candidatos", async (req, res) => {
 
     if (ano !== "TODOS") { where.push(`EXTRACT(YEAR  FROM fecha) = $${i++}`); params.push(Number(ano)); }
     if (mes !== "TODOS") { where.push(`EXTRACT(MONTH FROM fecha) = $${i++}`); params.push(Number(mes)); }
-    if (estado)         { where.push(`estado = $${i++}`); params.push(estado); }
+    if (estado)         { where.push(`LOWER(estado) = LOWER($${i++})`);       params.push(estado); }
     if (grupoInicio && grupoFin) {
       where.push(`(grupo ~ '^[0-9]+$' AND CAST(grupo AS INT) BETWEEN $${i++} AND $${i++})`);
       params.push(Number(grupoInicio), Number(grupoFin));
@@ -193,14 +193,23 @@ app.get("/api/candidatos", async (req, res) => {
     const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const sql = `
       SELECT
-        id, dni, apellido_paterno, apellido_materno, nombres, nombre_completo,
-        sede, turno_horario, grupo, estado, fecha,
-        dni_doc_url        AS dni,
-        certificados_url   AS certificados,
-        antecedentes_url   AS antecedentes,
-        medicos_url        AS medicos,
-        capacitacion_url   AS capacitacion,
-        cv_url             AS cv
+        id,
+        dni                         AS dni_numero,     -- número de DNI
+        apellido_paterno,
+        apellido_materno,
+        nombres,
+        nombre_completo,
+        sede,
+        turno_horario,
+        grupo,
+        estado,
+        fecha,
+        dni_doc_url                 AS dni_doc,        -- URL del doc DNI
+        certificados_url            AS certificados,
+        antecedentes_url            AS antecedentes,
+        medicos_url                 AS medicos,
+        capacitacion_url            AS capacitacion,
+        cv_url                      AS cv_doc          -- URL del CV
       FROM vw_api_candidatos
       ${whereSQL}
       ORDER BY fecha DESC, id DESC
@@ -213,16 +222,29 @@ app.get("/api/candidatos", async (req, res) => {
   }
 });
 
+
 app.get("/api/candidatos/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
     const cab = await pool.query(
       `SELECT
-         id, dni, apellido_paterno, apellido_materno, nombres, nombre_completo,
-         sede, turno_horario, grupo, estado, fecha,
-         dni_doc_url AS dni, certificados_url AS certificados,
-         antecedentes_url AS antecedentes, medicos_url AS medicos,
-         capacitacion_url AS capacitacion, cv_url AS cv
+         id,
+         dni                         AS dni_numero,
+         apellido_paterno,
+         apellido_materno,
+         nombres,
+         nombre_completo,
+         sede,
+         turno_horario,
+         grupo,
+         estado,
+         fecha,
+         dni_doc_url                 AS dni_doc,
+         certificados_url            AS certificados,
+         antecedentes_url            AS antecedentes,
+         medicos_url                 AS medicos,
+         capacitacion_url            AS capacitacion,
+         cv_url                      AS cv_doc
        FROM vw_api_candidatos
        WHERE id=$1`,
       [id]
@@ -243,6 +265,7 @@ app.get("/api/candidatos/:id", async (req, res) => {
     res.status(500).json({ error: "Error consultando candidato" });
   }
 });
+
 
 app.post("/api/candidatos", campos, async (req, res) => {
   const client = await pool.connect();
