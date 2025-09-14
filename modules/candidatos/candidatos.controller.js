@@ -1,93 +1,96 @@
 module.exports = ({ pool, uploadToCloudinary }) => {
   return {
     list: async (req, res) => {
-      try {
-        const {
-          ano = "TODOS",
-          mes = "TODOS",
-          estado = null,
-          grupoInicio = null,
-          grupoFin = null,
-        } = req.query;
+  try {
+    const {
+      ano = "TODOS",
+      mes = "TODOS",
+      estado = null,
+      grupoInicio = null,
+      grupoFin = null,
+    } = req.query;
 
-        const where = [];
-        const params = [];
-        let i = 1;
+    const where = [];
+    const params = [];
+    let i = 1;
 
-        if (ano !== "TODOS") { where.push(`EXTRACT(YEAR  FROM fecha) = $${i++}`); params.push(Number(ano)); }
-        if (mes !== "TODOS") { where.push(`EXTRACT(MONTH FROM fecha) = $${i++}`); params.push(Number(mes)); }
-        if (estado)         { where.push(`LOWER(estado) = LOWER($${i++})`);       params.push(estado); }
-        if (grupoInicio && grupoFin) {
-          where.push(`(grupo ~ '^[0-9]+$' AND CAST(grupo AS INT) BETWEEN $${i++} AND $${i++})`);
-          params.push(Number(grupoInicio), Number(grupoFin));
-        }
+    if (ano !== "TODOS") { where.push(`EXTRACT(YEAR  FROM v.fecha) = $${i++}`); params.push(Number(ano)); }
+    if (mes !== "TODOS") { where.push(`EXTRACT(MONTH FROM v.fecha) = $${i++}`); params.push(Number(mes)); }
+    if (estado)         { where.push(`LOWER(v.estado) = LOWER($${i++})`);       params.push(estado); }
+    if (grupoInicio && grupoFin) {
+      where.push(`(v.grupo ~ '^[0-9]+$' AND CAST(v.grupo AS INT) BETWEEN $${i++} AND $${i++})`);
+      params.push(Number(grupoInicio), Number(grupoFin));
+    }
 
-        const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
-        const sql = `
-          SELECT
-            id,
-            dni                         AS dni_numero,
-            apellido_paterno,
-            apellido_materno,
-            nombres,
-            nombre_completo,
-            sede,
-            turno_horario,
-            grupo,
-            estado,
-            fecha,
-            dni_doc_url                 AS dni_doc,
-            certificados_url            AS certificados,
-            antecedentes_url            AS antecedentes,
-            medicos_url                 AS medicos,
-            capacitacion_url            AS capacitacion,
-            cv_url                      AS cv_doc
-            COALESCE(dc.doc_count, 0) AS doc_count
-          FROM vw_api_candidatos
-          LEFT JOIN LATERAL (
-            SELECT COUNT(*)::int AS doc_count
-            FROM candidato_documentos d
-            WHERE d.candidato_id = v.id
-          ) dc ON TRUE
-          ${whereSQL}
-          ORDER BY fecha DESC, id DESC
-        `;
-        const { rows } = await pool.query(sql, params);
-        res.json(rows);
-      } catch (e) {
-        console.error("GET /api/candidatos", e);
-        res.status(500).json({ error: "Error consultando candidatos" });
-      }
-    },
+    const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    const sql = `
+      SELECT
+        v.id,
+        v.dni                       AS dni_numero,
+        v.apellido_paterno,
+        v.apellido_materno,
+        v.nombres,
+        v.nombre_completo,
+        v.sede,
+        v.turno_horario,
+        v.grupo,
+        v.estado,
+        v.fecha,
+        v.dni_doc_url              AS dni_doc,   -- URL (truthy para tu puntito)
+        v.certificados_url         AS certificados,
+        v.antecedentes_url         AS antecedentes,
+        v.medicos_url              AS medicos,
+        v.capacitacion_url         AS capacitacion,
+        v.cv_url                   AS cv_doc,    -- URL (truthy para tu puntito)
+        COALESCE(dc.doc_count, 0)::int AS doc_count
+      FROM vw_api_candidatos v
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS doc_count
+        FROM candidato_documentos d
+        WHERE d.candidato_id = v.id
+      ) dc ON TRUE
+      ${whereSQL}
+      ORDER BY v.fecha DESC, v.id DESC
+    `;
+
+    const { rows } = await pool.query(sql, params);
+    res.json(rows);
+  } catch (e) {
+    console.error("GET /api/candidatos", e);
+    res.status(500).json({ error: "Error consultando candidatos" });
+  }
+},
+
 
     getById: async (req, res) => {
       try {
         const id = Number(req.params.id);
         const cab = await pool.query(
           `SELECT
-             id,
-             dni                         AS dni_numero,
-             apellido_paterno,
-             apellido_materno,
-             nombres,
-             nombre_completo,
-             sede,
-             turno_horario,
-             grupo,
-             estado,
-             fecha,
-             dni_doc_url                 AS dni_doc,
-             certificados_url            AS certificados,
-             antecedentes_url            AS antecedentes,
-             medicos_url                 AS medicos,
-             capacitacion_url            AS capacitacion,
-             cv_url                      AS cv_doc
-           FROM vw_api_candidatos
-           WHERE id=$1`,
+             v.id,
+             v.dni                 AS dni_numero,
+             v.apellido_paterno,
+             v.apellido_materno,
+             v.nombres,
+             v.nombre_completo,
+             v.sede,
+             v.turno_horario,
+             v.grupo,
+             v.estado,
+             v.fecha,
+             v.dni_doc_url         AS dni_doc,
+             v.certificados_url    AS certificados,
+             v.antecedentes_url    AS antecedentes,
+             v.medicos_url         AS medicos,
+             v.capacitacion_url    AS capacitacion,
+             v.cv_url              AS cv_doc
+           FROM vw_api_candidatos v
+           WHERE v.id=$1`,
           [id]
         );
         if (cab.rowCount === 0) return res.status(404).json({ error: "No encontrado" });
-
+    
         const docs = await pool.query(
           `SELECT tipo, url, created_at
              FROM candidato_documentos
@@ -95,7 +98,7 @@ module.exports = ({ pool, uploadToCloudinary }) => {
             ORDER BY created_at DESC`,
           [id]
         );
-
+    
         res.json({ ...cab.rows[0], documentos: docs.rows });
       } catch (e) {
         console.error("GET /api/candidatos/:id", e);
