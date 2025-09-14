@@ -42,7 +42,13 @@ module.exports = ({ pool, uploadToCloudinary }) => {
             medicos_url                 AS medicos,
             capacitacion_url            AS capacitacion,
             cv_url                      AS cv_doc
+            COALESCE(dc.doc_count, 0) AS doc_count
           FROM vw_api_candidatos
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int AS doc_count
+            FROM candidato_documentos d
+            WHERE d.candidato_id = v.id
+          ) dc ON TRUE
           ${whereSQL}
           ORDER BY fecha DESC, id DESC
         `;
