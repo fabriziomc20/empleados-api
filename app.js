@@ -170,7 +170,7 @@ const candidatosRoutesFactory = require('./modules/candidatos/candidatos.routes'
 app.use('/api', candidatosRoutesFactory({ pool, uploadToCloudinary, campos }));
 app.get("/api/candidatos", async (req, res) => {
   try {
-    const {
+    let {
       ano = "TODOS",
       mes = "TODOS",
       estado = null,
@@ -182,44 +182,42 @@ app.get("/api/candidatos", async (req, res) => {
     const params = [];
     let i = 1;
 
-    if (ano !== "TODOS") { where.push(`EXTRACT(YEAR  FROM fecha) = $${i++}`); params.push(Number(ano)); }
-    if (mes !== "TODOS") { where.push(`EXTRACT(MONTH FROM fecha) = $${i++}`); params.push(Number(mes)); }
-    if (estado)         { where.push(`LOWER(estado) = LOWER($${i++})`);       params.push(estado); }
+    if (ano !== "TODOS") { where.push(`EXTRACT(YEAR  FROM v.fecha) = $${i++}`); params.push(Number(ano)); }
+    if (mes !== "TODOS") { where.push(`EXTRACT(MONTH FROM v.fecha) = $${i++}`); params.push(Number(mes)); }
+    if (estado)         { where.push(`UPPER(v.estado) = $${i++}`);               params.push(String(estado).toUpperCase()); }
     if (grupoInicio && grupoFin) {
-      where.push(`(grupo ~ '^[0-9]+$' AND CAST(grupo AS INT) BETWEEN $${i++} AND $${i++})`);
+      where.push(`(v.grupo ~ '^[0-9]+$' AND CAST(v.grupo AS INT) BETWEEN $${i++} AND $${i++})`);
       params.push(Number(grupoInicio), Number(grupoFin));
     }
 
     const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
     const sql = `
       SELECT
-        id,
-        dni                         AS dni_numero,     -- número de DNI
-        apellido_paterno,
-        apellido_materno,
-        nombres,
-        nombre_completo,
-        sede,
-        turno_horario,
-        grupo,
-        estado,
-        fecha,
-        dni_doc_url                 AS dni_doc,        -- URL del doc DNI
-        certificados_url            AS certificados,
-        antecedentes_url            AS antecedentes,
-        medicos_url                 AS medicos,
-        capacitacion_url            AS capacitacion,
-        cv_url                      AS cv_doc          -- URL del CV
-        COALESCE(dc.doc_count, 0) AS doc_count
-      FROM vw_api_candidatos
+        v.id,
+        v.dni                         AS dni_numero,
+        v.apellido_paterno,
+        v.apellido_materno,
+        v.nombres,
+        v.nombre_completo,
+        v.sede,
+        v.turno_horario,
+        v.grupo,
+        v.estado,
+        v.fecha,
+        (v.dni_doc_url IS NOT NULL)   AS dni_doc,    -- boolean para puntito
+        (v.cv_url IS NOT NULL)        AS cv_doc,     -- boolean para puntito
+        COALESCE(dc.doc_count, 0)::int AS doc_count  -- total de documentos
+      FROM vw_api_candidatos v
       LEFT JOIN LATERAL (
-        SELECT COUNT(*)::int AS doc_count
+        SELECT COUNT(*) AS doc_count
         FROM candidato_documentos d
         WHERE d.candidato_id = v.id
       ) dc ON TRUE
       ${whereSQL}
-      ORDER BY fecha DESC, id DESC
+      ORDER BY v.fecha DESC, v.id DESC
     `;
+
     const { rows } = await pool.query(sql, params);
     res.json(rows);
   } catch (e) {
@@ -227,6 +225,7 @@ app.get("/api/candidatos", async (req, res) => {
     res.status(500).json({ error: "Error consultando candidatos" });
   }
 });
+
 
 
 app.get("/api/candidatos/:id", async (req, res) => {
